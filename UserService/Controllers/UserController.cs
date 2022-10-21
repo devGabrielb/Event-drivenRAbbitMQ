@@ -1,5 +1,8 @@
+using System.Text;
+using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using RabbitMQ.Client;
 using UserService.Data;
 using UserService.Entities;
 
@@ -15,6 +18,8 @@ public class UserController : ControllerBase
     {
         _context = context;
     }
+
+
 
     [HttpGet]
     public async Task<ActionResult<IEnumerable<User>>> GetUsers()
@@ -32,6 +37,15 @@ public class UserController : ControllerBase
         }
         _context.Entry(user).State = EntityState.Modified;
         await _context.SaveChangesAsync();
+
+        var data = JsonSerializer.Serialize(new
+        {
+            user.ID,
+            user.Name
+        });
+
+        PublishToMessageQueue("user.update", data);
+
         return NoContent();
     }
 
@@ -41,7 +55,36 @@ public class UserController : ControllerBase
 
         _context.User.Add(user);
         await _context.SaveChangesAsync();
+
+        var data = JsonSerializer.Serialize(new
+        {
+            id = user.ID,
+            newname = user.Name
+        });
+
+        PublishToMessageQueue("user.add", data);
+
         return CreatedAtAction("GetUsers", new { id = user.ID }, user);
+    }
+
+
+    private static void PublishToMessageQueue(string integrationEvent, string eventData)
+    {
+        // TOOO: Reuse and close connections and channel, etc, 
+        var factory = new ConnectionFactory() { HostName = "rabbitmq", Port = 5672, UserName = "guest", Password = "guest" };
+        using var connection = factory.CreateConnection();
+        using var channel = connection.CreateModel();
+
+        channel.ExchangeDeclare(exchange: "user.postservice", type: ExchangeType.Fanout);
+
+        var body = Encoding.UTF8.GetBytes(eventData);
+        var properties = channel.CreateBasicProperties();
+        channel.BasicPublish(exchange: "user.postservice",
+                             routingKey: integrationEvent,
+                             basicProperties: properties,
+                             body: body);
+        Console.WriteLine(" [x] Sent {0}", body);
+
     }
 
 }
